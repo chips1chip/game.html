@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>scribbl.io</title>
+  <link href="https://fonts.googleapis.com/css2?family=Chewy&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Players Sidebar -->
+<div id="playersContainer" class="players-box">
+  <h3>Players</h3>
+  <ul id="playersList"></ul>
+</div>
+
+
+<!-- Drawer Notice -->
+<div id="drawerNotice" style="position:absolute;top:20px;right:20px;
+            background:rgba(255,255,255,0.9);padding:8px 14px;
+            border-radius:12px;font-family:'Chewy',cursive;color:#333;
+            font-size:1.2rem;box-shadow:0 2px 6px rgba(0,0,0,0.1);z-index:20;">
+  🎨 Waiting for game to start...
+</div>
+
+<!-- Canvas -->
+<div class="canvas-wrapper">
+  <canvas id="canvas" width="800" height="600"
+          style="background:#ffffff;border:2px solid #ccc;
+                 box-shadow:0 0 10px rgba(0,0,0,0.1);z-index:5;cursor:crosshair;">
+  </canvas>
+
+  <!-- Palette and Tools -->
+  <div class="palette-container">
+    <div class="palette" id="palette"></div>
+    <div class="tool-container">
+      <div class="tool-wrapper"><img src="https://img.icons8.com/?size=64&id=118995&format=png" id="pencil" title="Pencil Tool" class="tool-icon"></div>
+      <input type="range" min="1" max="30" value="4" id="sizeSlider" class="size-slider" title="Brush Size">
+      <div class="tool-wrapper"><img src="https://img.icons8.com/?size=80&id=kgr6HBcOZbs0&format=png" id="eraser" title="Eraser Tool" class="tool-icon"></div>
+      <div class="tool-wrapper"><img src="https://img.icons8.com/?size=64&id=46530&format=png" id="fill" title="Fill Tool" class="tool-icon"></div>
+      <div class="tool-wrapper"><img src="https://img.icons8.com/?size=50&id=JBVQtH9IkqGu&format=png" id="undo" title="Undo" class="tool-icon"></div>
+      <div class="tool-wrapper"><img src="https://img.icons8.com/?size=50&id=4Q4KezLBO8ZK&format=png" id="redo" title="Redo" class="tool-icon"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Admin Controls -->
+<div id="adminControls" style="position:absolute; top:60px; right:20px; z-index:50; display:none;">
+  <button id="startGameBtn" style="
+    padding:8px 16px; 
+    background:#4caf50; 
+    color:white; 
+    border:none; 
+    border-radius:8px; 
+    font-family:'Chewy', cursive;
+    cursor:pointer;
+  ">Start Game</button>
+</div>
+
+<!-- Chat -->
+<div id="chatContainer" style="position:absolute; top:45%; right:calc(50% - 400px - 300px); transform:translateY(-50%); width:220px; height:550px; background:rgba(255,255,255,0.9); border:2px solid #ccc; border-radius:8px; display:flex; flex-direction:column; z-index:2; padding:8px;">
+  <div id="chatMessages" style="flex:1; overflow-y:auto; margin-bottom:8px;"></div>
+  <input type="text" id="chatInput" placeholder="Type message..." style="width:90%; padding:8px 12px; border:1px solid #ccc; border-radius:20px; background: #fefefe; font-size:0.95rem;">
+</div>
+
+<!-- === Socket.io === -->
+<script src="server.js"></script>
+<script>
+const socket = io();
+const username = sessionStorage.getItem('username') || 'Player';
+let isAdmin = false;
+let isDrawer = false;
+let isChoosing = false;
+let currentDrawer = null;
+
+const notice = document.getElementById('drawerNotice');
+const TURN_PNG = 'https://img.icons8.com/?size=80&id=FMenQlIdi2Rw&format=png';
+const TURN_FALLBACK = 'https://img.icons8.com/?size=64&id=CCxiK5APZInu&format=gif&color=f7f7f7';
+
+// ---------------- JOIN ----------------
+socket.emit('join', username);
+
+// ---------------- CHAT ----------------
+const chatInput = document.getElementById('chatInput');
+const chatMessages = document.getElementById('chatMessages');
+
+chatInput.addEventListener('keypress', e => {
+  if (e.key === 'Enter' && chatInput.value.trim()) {
+    socket.emit('chatMessage', chatInput.value.trim());
+    chatInput.value = '';
+  }
+});
+
+function appendMessage(data) {
+  const div = document.createElement('div');
+  const { username: user = 'System', message = '' } = typeof data === 'string' ? { message: data } : data;
+
+  if (user.toLowerCase() === 'system') {
+    div.textContent = message;
+    div.style.cssText = 'text-align:center;font-style:italic;background:linear-gradient(90deg,#fff4c2,#ffe7a8);padding:6px 10px;border-radius:10px;margin:6px 0;';
+  } else {
+    div.innerHTML = `<strong>${user === username ? 'You' : user}:</strong> ${message}`;
+    div.style.cssText = `background:${user===username?'#d1ffd8':'#d1e7ff'};padding:6px 10px;border-radius:12px;margin:4px 0;`;
+  }
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+socket.on('chatMessage', appendMessage);
+
+// ---------------- PLAYER LIST ----------------
+socket.on('playersUpdate', (players) => {
+  const list = document.getElementById('playersList');
+  if (!list) return;
+  list.innerHTML = '';
+  players.forEach(name => {
+    const li = document.createElement('li');
+    li.textContent = name;
+    li.dataset.name = name;
+    if (name === username) li.classList.add('you');
+    if (currentDrawer && name === currentDrawer) li.classList.add('drawer');
+    list.appendChild(li);
+  });
+});
+
+// ---------------- DRAWER TURN ----------------
+socket.on('setDrawer', drawerName => {
+  currentDrawer = drawerName;
+  isDrawer = (drawerName === username);
+  console.log('🖌️ Drawer set:', drawerName, '| You are drawer?', isDrawer);
+
+  const list = document.getElementById('playersList');
+  if (list) {
+    Array.from(list.children).forEach(li => {
+      li.classList.toggle('drawer', li.dataset.name === drawerName);
+    });
+  }
+
+  if (notice)
+    notice.textContent = isDrawer ? "🎨 It's your turn to draw!" : `🖌️ ${drawerName} is drawing...`;
+});
+
+// ---------------- WORD OPTIONS ----------------
+socket.on('wordOptions', (words) => {
+  if (!isDrawer) return;
+  isChoosing = true;
+  console.log('📋 Word options received:', words);
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position:fixed;top:0;left:0;width:100vw;height:100vh;
+    background:rgba(0,0,0,0.5);display:flex;justify-content:center;
+    align-items:center;z-index:99999;
+  `;
+
+  const box = document.createElement('div');
+  box.style.cssText = `
+    background:white;padding:30px 40px;border-radius:16px;
+    text-align:center;font-family:'Chewy',cursive;
+  `;
+  const title = document.createElement('h3');
+  title.textContent = 'Choose a word 🎨';
+  box.appendChild(title);
+
+  const container = document.createElement('div');
+  container.style.cssText = 'display:flex;gap:15px;margin-top:15px;justify-content:center;';
+
+  words.forEach(word => {
+    const btn = document.createElement('button');
+    btn.textContent = word;
+    btn.style.cssText = `
+      padding:10px 20px;background:#ffc4d5;border:none;
+      border-radius:10px;cursor:pointer;font-size:1rem;
+    `;
+    btn.onclick = () => {
+      socket.emit('wordChosen', word);
+      document.body.removeChild(overlay);
+    };
+    container.appendChild(btn);
+  });
+
+  box.appendChild(container);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+});
+
+// ---------------- POPUP for DRAWER ----------------
+socket.on('wordChosenConfirm', (word) => {
+  isChoosing = false;
+  console.log('✅ Word confirmed for drawer:', word);
+  if (notice) notice.textContent = `🎨 Word: ${word}`;
+
+  if (isDrawer) {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position:fixed;top:0;left:0;width:100vw;height:100vh;
+      background:rgba(0,0,0,0.45);display:flex;justify-content:center;
+      align-items:center;z-index:99999;
+    `;
+    const box = document.createElement('div');
+    box.style.cssText = `
+      background:white;padding:35px 45px;border-radius:20px;
+      font-family:'Chewy',cursive;text-align:center;
+    `;
+    const title = document.createElement('h2');
+    title.textContent = 'You are the Drawer!';
+    title.style.marginBottom = '10px';
+    const wordEl = document.createElement('p');
+    wordEl.textContent = `Draw this word: "${word}"`;
+    wordEl.style.fontSize = '1.3rem';
+    const btn = document.createElement('button');
+    btn.textContent = 'Start Drawing';
+    btn.style.cssText = `
+      margin-top:20px;padding:10px 25px;font-size:1rem;
+      background:#ffd3e0;border:none;border-radius:10px;cursor:pointer;
+    `;
+    btn.onclick = () => document.body.removeChild(overlay);
+
+    box.appendChild(title);
+    box.appendChild(wordEl);
+    box.appendChild(btn);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  }
+});
+
+// ---------------- DRAWING ----------------
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let drawing = false, lastX = 0, lastY = 0;
+let brushSize = 4, currentColor = '#000';
+const drawBuffer = [];
+const EMIT_INTERVAL = 25;
+
+canvas.addEventListener('mousedown', e => {
+  if (!isDrawer || isChoosing) return;
+  drawing = true;
+  [lastX, lastY] = [e.offsetX, e.offsetY];
+  drawBuffer.push({x:lastX,y:lastY,prev:{x:lastX,y:lastY},color:currentColor,size:brushSize});
+});
+
+canvas.addEventListener('mouseup',()=>drawing=false);
+canvas.addEventListener('mouseout',()=>drawing=false);
+
+canvas.addEventListener('mousemove', e => {
+  if (!drawing || !isDrawer || isChoosing) return;
+  ctx.strokeStyle = currentColor;
+  ctx.lineWidth = brushSize;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(lastX,lastY);
+  ctx.lineTo(e.offsetX,e.offsetY);
+  ctx.stroke();
+  drawBuffer.push({x:e.offsetX,y:e.offsetY,prev:{x:lastX,y:lastY},color:ctx.strokeStyle,size:ctx.lineWidth});
+  [lastX,lastY] = [e.offsetX,e.offsetY];
+});
+
+setInterval(()=>{
+  if(drawBuffer.length && isDrawer){
+    socket.emit('drawBuffer', drawBuffer.splice(0));
+  }
+}, EMIT_INTERVAL);
+
+socket.on('drawBuffer', points => {
+  points.forEach(({x,y,prev,color,size})=>{
+    ctx.strokeStyle=color||'#000';
+    ctx.lineWidth=size||4;
+    ctx.beginPath();
+    ctx.moveTo(prev.x,prev.y);
+    ctx.lineTo(x,y);
+    ctx.stroke();
+  });
+});
+
+socket.on('clearCanvas',()=>ctx.clearRect(0,0,canvas.width,canvas.height));
+</script>
+
+<script src="chat.js"></script>
+<script src="canvas.js"></script>
+</body>
+</html>
